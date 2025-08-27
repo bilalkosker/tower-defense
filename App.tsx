@@ -1,6 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
-import {View, StyleSheet, Text, Dimensions, TouchableWithoutFeedback, Image} from 'react-native';
-import Svg, { Path } from 'react-native-svg';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, Text, Dimensions, TouchableWithoutFeedback, Image } from 'react-native';
 
 const { width, height } = Dimensions.get('window');
 
@@ -8,7 +7,8 @@ type EnemyType = 'fast' | 'medium' | 'slow';
 
 interface Enemy {
     id: number;
-    length: number;
+    currentIndex: number;
+    progress: number;
     hp: number;
     maxHp: number;
     type: EnemyType;
@@ -21,33 +21,37 @@ interface Bullet {
     color: string;
 }
 
-const pathD = `
-  M50,${height - 100} 
-  C150,${height - 300} 300,${height - 250} ${width - 200},${height / 2} 
-  S${width - 50},150 ${width - 50},50
-`;
+const waypoints = [
+    { x: 50, y: height - 100 },
+    { x: 150, y: height - 300 },
+    { x: 300, y: height - 250 },
+    { x: width - 200, y: height / 2 },
+    { x: width - 100, y: 150 },
+    { x: width - 50, y: 50 },
+];
+
+function lerp(a: number, b: number, t: number) {
+    return a + (b - a) * t;
+}
+
+function getEnemyPosition(enemy: Enemy) {
+    const current = waypoints[enemy.currentIndex];
+    const next = waypoints[enemy.currentIndex + 1];
+    if (!next) return current;
+    return {
+        x: lerp(current.x, next.x, enemy.progress),
+        y: lerp(current.y, next.y, enemy.progress),
+    };
+}
+
 export default function App() {
     const [enemies, setEnemies] = useState<Enemy[]>([]);
     const [bullets, setBullets] = useState<Bullet[]>([]);
     const [score, setScore] = useState(0);
     const [lives, setLives] = useState(5);
 
-    const pathRef = useRef<any>(null);
-    const [pathLength, setPathLength] = useState(0);
-
-    // Path uzunluğunu al
+    // Enemy spawn
     useEffect(() => {
-        const timeout = setTimeout(() => {
-            if (pathRef.current) {
-                setPathLength(pathRef.current.getTotalLength());
-            }
-        }, 100);
-        return () => clearTimeout(timeout);
-    }, []);
-
-    // Düşman spawn
-    useEffect(() => {
-        if (!pathLength) return;
         let id = 0;
         const interval = setInterval(() => {
             const rand = Math.random();
@@ -56,44 +60,53 @@ export default function App() {
             else if (rand < 0.7) type = 'medium';
             else type = 'slow';
             const hp = type === 'fast' ? 1 : type === 'medium' ? 2 : 3;
-            setEnemies(prev => [...prev, { id: id++, length: 0, hp, maxHp: hp, type }]);
+
+            setEnemies(prev => [
+                ...prev,
+                { id: id++, currentIndex: 0, progress: 0, hp, maxHp: hp, type },
+            ]);
         }, 2000);
         return () => clearInterval(interval);
-    }, [pathLength]);
+    }, []);
 
-    // Enemy hareketi (yavaşlatıldı)
+    // Enemy hareketi
     useEffect(() => {
         const interval = setInterval(() => {
-            if (!pathLength) return;
             setEnemies(prev =>
                 prev
                     .map(e => {
-                        let speed = e.type === 'fast' ? 2 : e.type === 'medium' ? 1.5 : 1;
-                        const newLength = e.length + speed;
-                        if (newLength >= pathLength) {
-                            setLives(l => l - 1);
-                            return null;
+                        let speed = e.type === 'fast' ? 0.015 : e.type === 'medium' ? 0.01 : 0.007;
+                        let newProgress = e.progress + speed;
+                        let newIndex = e.currentIndex;
+
+                        if (newProgress >= 1) {
+                            newIndex++;
+                            newProgress = 0;
+                            if (newIndex >= waypoints.length - 1) {
+                                setLives(l => l - 1);
+                                return null;
+                            }
                         }
-                        return { ...e, length: newLength };
+
+                        return { ...e, currentIndex: newIndex, progress: newProgress };
                     })
                     .filter(Boolean) as Enemy[]
             );
         }, 16);
+
         return () => clearInterval(interval);
-    }, [pathLength]);
+    }, []);
 
     // Bullet hareketi
     useEffect(() => {
         const interval = setInterval(() => {
-            if (!pathLength || !pathRef.current) return;
-
             setBullets(prev =>
                 prev
                     .map(b => {
                         const enemy = enemies.find(e => e.id === b.targetId);
                         if (!enemy) return null;
 
-                        const point = pathRef.current.getPointAtLength(enemy.length);
+                        const point = getEnemyPosition(enemy);
                         const dx = point.x - b.x;
                         const dy = point.y - b.y;
                         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -114,25 +127,29 @@ export default function App() {
                         }
 
                         const speed = 8;
-                        return { ...b, x: b.x + (dx / dist) * speed, y: b.y + (dy / dist) * speed };
+                        return {
+                            ...b,
+                            x: b.x + (dx / dist) * speed,
+                            y: b.y + (dy / dist) * speed,
+                        };
                     })
                     .filter(Boolean) as Bullet[]
             );
         }, 16);
 
         return () => clearInterval(interval);
-    }, [enemies, pathLength]);
+    }, [enemies]);
 
     const handlePress = () => {
-        if (!pathLength || enemies.length === 0 || !pathRef.current) return;
+        if (enemies.length === 0) return;
 
-        const towerX = width - 50;
-        const towerY = 50;
+        const towerX = waypoints[waypoints.length - 1].x;
+        const towerY = waypoints[waypoints.length - 1].y;
 
         let target = enemies[0];
         let minDist = Number.MAX_VALUE;
         enemies.forEach(e => {
-            const point = pathRef.current.getPointAtLength(e.length);
+            const point = getEnemyPosition(e);
             const dist = Math.hypot(point.x - towerX, point.y - towerY);
             if (dist < minDist) {
                 minDist = dist;
@@ -141,7 +158,10 @@ export default function App() {
         });
 
         const bulletColor = target.type === 'fast' ? 'orange' : target.type === 'medium' ? 'yellow' : 'lime';
-        setBullets(prev => [...prev, { x: towerX, y: towerY, targetId: target.id, color: bulletColor }]);
+        setBullets(prev => [
+            ...prev,
+            { x: towerX, y: towerY, targetId: target.id, color: bulletColor },
+        ]);
     };
 
     return (
@@ -149,39 +169,24 @@ export default function App() {
             <View style={styles.container}>
                 <Text style={styles.info}>Score: {score} | Lives: {lives}</Text>
                 <View style={styles.gameArea}>
-                    <Svg style={StyleSheet.absoluteFill}>
-                        <Path ref={pathRef} d={pathD} stroke="#888" strokeWidth={6} fill="none" />
-                    </Svg>
-
                     {/* Kule */}
                     <Image
-                        source={require('./assets/tower.png')} // buraya kule resmi
-                        style={{ width: 50, height: 50, position: 'absolute', left: width - 50 - 25, top: 50 - 25 }}
+                        source={require('./assets/tower.png')}
+                        style={{ width: 50, height: 50, position: 'absolute', left: waypoints.at(-1)!.x - 25, top: waypoints.at(-1)!.y - 25 }}
                     />
 
                     {/* Düşmanlar */}
                     {enemies.map(e => {
-                        if (!pathLength || !pathRef.current) return null;
-                        const point = pathRef.current.getPointAtLength(e.length) || { x: 0, y: 0 };
-
+                        const point = getEnemyPosition(e);
                         return (
                             <View key={e.id}>
-                                {/* Düşman resmi */}
                                 <Image
-                                    source={require('./assets/enemy.png')} // buraya düşman resmin
+                                    source={require('./assets/enemy.png')}
                                     style={{ width: 30, height: 30, position: 'absolute', left: point.x - 15, top: point.y - 15 }}
                                 />
-
-                                {/* HP bar arka plan */}
                                 <View style={[styles.hpBarBackground, { left: point.x - 15, top: point.y - 25 }]} />
-
-                                {/* HP bar ön plan */}
                                 <View style={[styles.hpBar, { left: point.x - 15, top: point.y - 25, width: (30 * e.hp) / e.maxHp }]} />
-
-                                {/* Can sayısı */}
-                                <Text style={[styles.hpText, { left: point.x - 15 + 15 - 8, top: point.y - 25 - 12 }]}>
-                                    {e.hp}
-                                </Text>
+                                <Text style={[styles.hpText, { left: point.x - 8, top: point.y - 37 }]}>{e.hp}</Text>
                             </View>
                         );
                     })}
@@ -200,8 +205,6 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#1a1a2e', paddingTop: 50 },
     info: { color: '#fff', fontSize: 18, textAlign: 'center', marginBottom: 10 },
     gameArea: { flex: 1, backgroundColor: '#eee' },
-    tower: { position: 'absolute', width: 50, height: 50, backgroundColor: 'blue', borderRadius: 25 },
-    enemy: { position: 'absolute', width: 30, height: 30, borderRadius: 15 },
     hpBarBackground: {
         position: 'absolute',
         height: 4,
